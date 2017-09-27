@@ -9,6 +9,7 @@
 #include "ipaddress.h"
 #include "ipaddresses.h"
 #include "ipprefix.h"
+#include "bulker.h"
 
 #include <map>
 
@@ -62,6 +63,7 @@ public:
     bool removeNextHopGroup(IpAddresses);
 
 private:
+    RouteBulker m_bulker;
     NeighOrch *m_neighOrch;
 
     int m_nextHopGroupCount;

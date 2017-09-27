@@ -18,6 +18,7 @@ extern PortsOrch *gPortsOrch;
 
 RouteOrch::RouteOrch(DBConnector *db, string tableName, NeighOrch *neighOrch) :
         Orch(db, tableName),
+        m_bulker(sai_route_api, sai_next_hop_group_api),
         m_neighOrch(neighOrch),
         m_nextHopGroupCount(0),
         m_resync(false)
@@ -281,6 +282,8 @@ void RouteOrch::doTask(Consumer& consumer)
             it = consumer.m_toSync.erase(it);
         }
     }
+
+    m_bulker.flush();
 }
 
 void RouteOrch::notifyNextHopChangeObservers(IpPrefix prefix, IpAddresses nexthops, bool add)
@@ -423,6 +426,7 @@ bool RouteOrch::addNextHopGroup(IpAddresses ipAddresses)
         return false;
     }
 
+    m_bulker.flush();
     vector<sai_object_id_t> next_hop_ids;
     set<IpAddress> next_hop_set = ipAddresses.getIpAddresses();
 
@@ -516,6 +520,7 @@ bool RouteOrch::removeNextHopGroup(IpAddresses ipAddresses)
     sai_status_t status;
     assert(hasNextHopGroup(ipAddresses));
 
+    m_bulker.flush();
     if (m_syncdNextHopGroups[ipAddresses].ref_count == 0)
     {
         auto next_hop_group_entry = m_syncdNextHopGroups[ipAddresses];
@@ -659,7 +664,7 @@ bool RouteOrch::addRoute(IpPrefix ipPrefix, IpAddresses nextHops)
         route_attr.value.oid = next_hop_id;
 
         /* Default SAI_ROUTE_ATTR_PACKET_ACTION is SAI_PACKET_ACTION_FORWARD */
-        sai_status_t status = sai_route_api->create_route_entry(&route_entry, 1, &route_attr);
+        sai_status_t status = m_bulker.create_route_entry(&route_entry, 1, &route_attr);
         if (status != SAI_STATUS_SUCCESS)
         {
             SWSS_LOG_ERROR("Failed to create route %s with next hop(s) %s",
@@ -687,7 +692,7 @@ bool RouteOrch::addRoute(IpPrefix ipPrefix, IpAddresses nextHops)
             route_attr.id = SAI_ROUTE_ENTRY_ATTR_PACKET_ACTION;
             route_attr.value.s32 = SAI_PACKET_ACTION_FORWARD;
 
-            status = sai_route_api->set_route_entry_attribute(&route_entry, &route_attr);
+            status = m_bulker.set_route_entry_attribute(&route_entry, &route_attr);
             if (status != SAI_STATUS_SUCCESS)
             {
                 SWSS_LOG_ERROR("Failed to set route %s with packet action forward, %d",
@@ -700,7 +705,7 @@ bool RouteOrch::addRoute(IpPrefix ipPrefix, IpAddresses nextHops)
         route_attr.value.oid = next_hop_id;
 
         /* Set the next hop ID to a new value */
-        status = sai_route_api->set_route_entry_attribute(&route_entry, &route_attr);
+        status = m_bulker.set_route_entry_attribute(&route_entry, &route_attr);
         if (status != SAI_STATUS_SUCCESS)
         {
             SWSS_LOG_ERROR("Failed to set route %s with next hop(s) %s",
@@ -743,7 +748,7 @@ bool RouteOrch::removeRoute(IpPrefix ipPrefix)
         attr.id = SAI_ROUTE_ENTRY_ATTR_PACKET_ACTION;
         attr.value.s32 = SAI_PACKET_ACTION_DROP;
 
-        sai_status_t status = sai_route_api->set_route_entry_attribute(&route_entry, &attr);
+        sai_status_t status = m_bulker.set_route_entry_attribute(&route_entry, &attr);
         if (status != SAI_STATUS_SUCCESS)
         {
             SWSS_LOG_ERROR("Failed to set route %s packet action to drop, rv:%d",
@@ -756,7 +761,7 @@ bool RouteOrch::removeRoute(IpPrefix ipPrefix)
         attr.id = SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID;
         attr.value.oid = SAI_NULL_OBJECT_ID;
 
-        status = sai_route_api->set_route_entry_attribute(&route_entry, &attr);
+        status = m_bulker.set_route_entry_attribute(&route_entry, &attr);
         if (status != SAI_STATUS_SUCCESS)
         {
             SWSS_LOG_ERROR("Failed to set route %s next hop ID to NULL, rv:%d",
@@ -768,7 +773,7 @@ bool RouteOrch::removeRoute(IpPrefix ipPrefix)
     }
     else
     {
-        sai_status_t status = sai_route_api->remove_route_entry(&route_entry);
+        sai_status_t status = m_bulker.remove_route_entry(&route_entry);
         if (status != SAI_STATUS_SUCCESS)
         {
             SWSS_LOG_ERROR("Failed to remove route prefix:%s\n", ipPrefix.to_string().c_str());
