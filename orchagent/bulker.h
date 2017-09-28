@@ -123,10 +123,12 @@ public:
         auto found_setting = setting_entries.find(*route_entry);
         if (found_setting != setting_entries.end())
         {
+            // For simplicity, just insert new attribute at the vector end, no merging
             found_setting->second.emplace_back(*attr);
         }
         else
         {
+            // Create a new key if not exists in the map
             setting_entries.emplace(std::piecewise_construct,
                 std::forward_as_tuple(*route_entry),
                 std::forward_as_tuple(1, *attr));
@@ -159,7 +161,6 @@ public:
             {
                 auto const& route_entry = i.first;
                 auto const& attrs = i.second;
-                //route_api->create_route_entry(&route_entry, (uint32_t)attrs.size(), attrs.data());
 
                 rs.push_back(route_entry);
                 tss.push_back(attrs.data());
@@ -167,24 +168,35 @@ public:
             }
             uint32_t route_count = (uint32_t)creating_entries.size();
             vector<sai_status_t> statuses(route_count);
-
             sai_bulk_create_route_entry(route_count, rs.data(), cs.data(), tss.data()
                 , SAI_BULK_OP_TYPE_INGORE_ERROR, statuses.data());
+
             creating_entries.clear();
         }
 
         // Setting
         if (!setting_entries.empty())
         {
-            for (auto i: setting_entries)
+            vector<sai_route_entry_t> rs;
+            vector<sai_attribute_t> ts;
+            vector<uint32_t> cs;
+
+            for (auto const& i: setting_entries)
             {
-                auto& route_entry = i.first;
-                auto& attrs = i.second;
-                for (auto attr: attrs)
+                auto const& route_entry = i.first;
+                auto const& attrs = i.second;
+                for (auto const& attr: attrs)
                 {
-                    route_api->set_route_entry_attribute(&route_entry, &attr);
+                    rs.push_back(route_entry);
+                    ts.push_back(attr);
+                    //route_api->set_route_entry_attribute(&route_entry, &attr);
                 }
             }
+            uint32_t route_count = (uint32_t)setting_entries.size();
+            vector<sai_status_t> statuses(route_count);
+            sai_bulk_set_route_entry_attribute(route_count, rs.data(), ts.data()
+                , SAI_BULK_OP_TYPE_INGORE_ERROR, statuses.data());
+
             setting_entries.clear();
         }
     }
