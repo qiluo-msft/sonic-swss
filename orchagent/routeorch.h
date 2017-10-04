@@ -16,13 +16,6 @@
 /* Maximum next hop group number */
 #define NHGRP_MAX_SIZE 128
 
-struct NextHopGroupEntry
-{
-    sai_object_id_t         next_hop_group_id;      // next hop group id
-    std::set<sai_object_id_t>    next_hop_group_members; // next hop group member ids
-    int                     ref_count;              // reference count
-};
-
 struct NextHopUpdate
 {
     IpPrefix prefix;
@@ -31,8 +24,6 @@ struct NextHopUpdate
 
 struct NextHopObserverEntry;
 
-/* NextHopGroupTable: next hop group IP addersses, NextHopGroupEntry */
-typedef std::map<IpAddresses, NextHopGroupEntry> NextHopGroupTable;
 /* RouteTable: destination network, next hop IP address(es) */
 typedef std::map<IpPrefix, IpAddresses> RouteTable;
 /* NextHopObserverTable: Destination IP address, next hop observer entry */
@@ -49,30 +40,27 @@ class RouteOrch : public Orch, public Subject
 public:
     RouteOrch(DBConnector *db, string tableName, NeighOrch *neighOrch);
 
-    bool hasNextHopGroup(const IpAddresses&) const;
-    sai_object_id_t getNextHopGroupId(const IpAddresses&);
+    bool hasNextHopGroup(const IpAddresses& ips) const { return ngh_bulker->hasNextHopGroup(ips); }
+    sai_object_id_t getNextHopGroupId(const IpAddresses& ips) const { return ngh_bulker->getNextHopGroupId(ips); }
 
     void attach(Observer *, const IpAddress&);
     void detach(Observer *, const IpAddress&);
 
-    void increaseNextHopRefCount(IpAddresses);
-    void decreaseNextHopRefCount(IpAddresses);
-    bool isRefCounterZero(const IpAddresses&) const;
+    void increaseNextHopRefCount(const IpAddresses& ips) { return ngh_bulker->increaseNextHopRefCount(ips); }
+    void decreaseNextHopRefCount(const IpAddresses& ips) { return ngh_bulker->decreaseNextHopRefCount(ips); }
+    bool isRefCounterZero(const IpAddresses& ips) const { return ngh_bulker->isRefCounterZero(ips); }
 
-    bool addNextHopGroup(IpAddresses);
-    bool removeNextHopGroup(IpAddresses);
+    bool addNextHopGroup(const IpAddresses&);
+    bool removeNextHopGroup(const IpAddresses&);
 
 private:
     RouteBulker m_bulker;
+    NextHopGroupBulker *ngh_bulker;
     NeighOrch *m_neighOrch;
 
-    int m_nextHopGroupCount;
-    int m_maxNextHopGroupCount;
     bool m_resync;
 
     RouteTable m_syncdRoutes;
-    NextHopGroupTable m_syncdNextHopGroups;
-
     NextHopObserverTable m_nextHopObservers;
 
     void addTempRoute(IpPrefix, IpAddresses);

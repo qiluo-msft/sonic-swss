@@ -645,6 +645,7 @@ sai_object_id_t AclRuleL3::getRedirectObjectId(const string& redirect_value)
     try
     {
         IpAddresses ips(target);
+        assert(ips.getSize() > 1);
         if (!m_pAclOrch->m_routeOrch->hasNextHopGroup(ips))
         {
             SWSS_LOG_INFO("ACL Redirect action target next hop group: '%s' doesn't exist on the switch. Creating it.", ips.to_string().c_str());

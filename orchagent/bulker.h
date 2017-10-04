@@ -71,13 +71,22 @@ namespace std
     };
 }
 
+struct NextHopGroupEntry
+{
+    sai_object_id_t         next_hop_group_id;      // next hop group id
+    std::set<sai_object_id_t>    next_hop_group_members; // next hop group member ids
+    int                     ref_count;              // reference count
+};
+
+/* NextHopGroupTable: next hop group IP addersses, NextHopGroupEntry */
+typedef std::map<IpAddresses, NextHopGroupEntry> NextHopGroupTable;
+
 class RouteBulker
 {
 public:
     RouteBulker(sai_route_api_t *sai_route_api, sai_next_hop_group_api_t* sai_next_hop_group_api)
     {
         route_api = sai_route_api;
-        next_hop_group_api = sai_next_hop_group_api;
     }
 
     sai_status_t create_route_entry(
@@ -88,6 +97,7 @@ public:
         creating_entries.emplace(std::piecewise_construct,
                 std::forward_as_tuple(*route_entry),
                 std::forward_as_tuple(attr_list, attr_list + attr_count));
+        SWSS_LOG_DEBUG("bulk.create_route_entry %zu, %zu, %d\n", creating_entries.size(), creating_entries[*route_entry].size(), (int)creating_entries[*route_entry][0].id);
         return SAI_STATUS_SUCCESS;
     }
 
@@ -171,6 +181,8 @@ public:
             sai_bulk_create_route_entry(route_count, rs.data(), cs.data(), tss.data()
                 , SAI_BULK_OP_TYPE_INGORE_ERROR, statuses.data());
 
+            SWSS_LOG_NOTICE("bulk.flush creating_entries %zu\n", creating_entries.size());
+
             creating_entries.clear();
         }
 
@@ -197,6 +209,8 @@ public:
             sai_bulk_set_route_entry_attribute(route_count, rs.data(), ts.data()
                 , SAI_BULK_OP_TYPE_INGORE_ERROR, statuses.data());
 
+            SWSS_LOG_NOTICE("bulk.flush setting_entries %zu\n", setting_entries.size());
+
             setting_entries.clear();
         }
     }
@@ -210,8 +224,172 @@ public:
 
 private:
     sai_route_api_t *                                                       route_api;
-    sai_next_hop_group_api_t *                                              next_hop_group_api;
     std::unordered_map<sai_route_entry_t, std::vector<sai_attribute_t>>     creating_entries;
     std::unordered_map<sai_route_entry_t, std::vector<sai_attribute_t>>     setting_entries;
     std::unordered_set<sai_route_entry_t>                                   removing_entries;
+};
+
+class NextHopGroupBulker
+{
+public:
+    NextHopGroupBulker(sai_next_hop_group_api_t* next_hop_group_api, RouteBulker* routebulker, int maxNextHopGroupCount, sai_object_id_t switchId)
+        : sai_next_hop_group_api(next_hop_group_api)
+        , m_nextHopGroupCount(0)
+        , route_bulker(routebulker)
+        , m_maxNextHopGroupCount(maxNextHopGroupCount)
+        , m_switchId(switchId)
+    {
+    }
+    
+    bool hasNextHopGroup(const IpAddresses& ipAddresses) const
+    {
+        return m_syncdNextHopGroups.find(ipAddresses) != m_syncdNextHopGroups.end();
+    }
+
+    sai_object_id_t getNextHopGroupId(const IpAddresses& ipAddresses)
+    {
+        assert(hasNextHopGroup(ipAddresses));
+        return m_syncdNextHopGroups[ipAddresses].next_hop_group_id;
+    }
+
+    void increaseNextHopRefCount(const IpAddresses& ipAddresses)
+    {
+        assert(ipAddresses.getSize() > 1);
+        m_syncdNextHopGroups[ipAddresses].ref_count ++;
+    }
+    void decreaseNextHopRefCount(const IpAddresses& ipAddresses)
+    {
+        assert(ipAddresses.getSize() > 1);
+        m_syncdNextHopGroups[ipAddresses].ref_count --;
+    }
+
+    bool isRefCounterZero(const IpAddresses& ipAddresses) const
+    {
+        if (!hasNextHopGroup(ipAddresses))
+        {
+            return true;
+        }
+
+        return m_syncdNextHopGroups.at(ipAddresses).ref_count == 0;
+    }
+    
+    bool addNextHopGroup(const IpAddresses& ipAddresses, const vector<sai_object_id_t>& next_hop_ids)
+    {
+        if (m_nextHopGroupCount >= m_maxNextHopGroupCount)
+        {
+            SWSS_LOG_DEBUG("Failed to create new next hop group. \
+                            Reaching maximum number of next hop groups.");
+            return false;
+        }
+
+        route_bulker->flush();
+        
+        sai_attribute_t nhg_attr;
+        vector<sai_attribute_t> nhg_attrs;
+
+        nhg_attr.id = SAI_NEXT_HOP_GROUP_ATTR_TYPE;
+        nhg_attr.value.s32 = SAI_NEXT_HOP_GROUP_TYPE_ECMP;
+        nhg_attrs.push_back(nhg_attr);
+
+        sai_object_id_t next_hop_group_id;
+        sai_status_t status = sai_next_hop_group_api->
+                create_next_hop_group(&next_hop_group_id, m_switchId, (uint32_t)nhg_attrs.size(), nhg_attrs.data());
+
+        if (status != SAI_STATUS_SUCCESS)
+        {
+            SWSS_LOG_ERROR("Failed to create next hop group %s, rv:%d",
+                           ipAddresses.to_string().c_str(), status);
+            return false;
+        }
+
+        m_nextHopGroupCount ++;
+        SWSS_LOG_NOTICE("Create next hop group %s", ipAddresses.to_string().c_str());
+
+        NextHopGroupEntry next_hop_group_entry;
+        next_hop_group_entry.next_hop_group_id = next_hop_group_id;
+
+        for (auto nhid: next_hop_ids)
+        {
+            // Create a next hop group member
+            vector<sai_attribute_t> nhgm_attrs;
+
+            sai_attribute_t nhgm_attr;
+            nhgm_attr.id = SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_GROUP_ID;
+            nhgm_attr.value.oid = next_hop_group_id;
+            nhgm_attrs.push_back(nhgm_attr);
+
+            nhgm_attr.id = SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_ID;
+            nhgm_attr.value.oid = nhid;
+            nhgm_attrs.push_back(nhgm_attr);
+
+            sai_object_id_t next_hop_group_member_id;
+            status = //redis_bulk_object_create_next_hop_group_members();
+                    sai_next_hop_group_api->
+                    create_next_hop_group_member(&next_hop_group_member_id, m_switchId, (uint32_t)nhgm_attrs.size(), nhgm_attrs.data());
+
+            if (status != SAI_STATUS_SUCCESS)
+            {
+                // TODO: do we need to clean up?
+                SWSS_LOG_ERROR("Failed to create next hop group %lx member %lx: %d\n",
+                               next_hop_group_id, next_hop_group_member_id, status);
+                return false;
+            }
+
+            // Save the membership into next hop structure
+            next_hop_group_entry.next_hop_group_members.insert(next_hop_group_member_id);
+        }
+        /*
+         * Initialize the next hop group structure with ref_count as 0. This
+         * count will increase once the route is successfully syncd.
+         */
+        next_hop_group_entry.ref_count = 0;
+        m_syncdNextHopGroups[ipAddresses] = next_hop_group_entry;
+        return true;
+    }
+    
+    bool removeNextHopGroup(const IpAddresses& ipAddresses)
+    {
+        sai_status_t status;
+        assert(hasNextHopGroup(ipAddresses));
+
+        route_bulker->flush();
+        if (m_syncdNextHopGroups[ipAddresses].ref_count == 0)
+        {
+            auto next_hop_group_entry = m_syncdNextHopGroups[ipAddresses];
+            sai_object_id_t next_hop_group_id = next_hop_group_entry.next_hop_group_id;
+
+            for (auto next_hop_group_member_id: next_hop_group_entry.next_hop_group_members)
+            {
+                status = sai_next_hop_group_api->remove_next_hop_group_member(next_hop_group_member_id);
+                if (status != SAI_STATUS_SUCCESS)
+                {
+                    SWSS_LOG_ERROR("Failed to remove next hop group member %lx, rv:%d", next_hop_group_member_id, status);
+                    return false;
+                }
+            }
+
+            sai_status_t status = sai_next_hop_group_api->remove_next_hop_group(next_hop_group_id);
+            if (status != SAI_STATUS_SUCCESS)
+            {
+                SWSS_LOG_ERROR("Failed to remove next hop group %lx, rv:%d", next_hop_group_id, status);
+                return false;
+            }
+
+            m_nextHopGroupCount --;
+            m_syncdNextHopGroups.erase(ipAddresses);
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    
+private:
+    int m_nextHopGroupCount;
+    int m_maxNextHopGroupCount;
+    NextHopGroupTable m_syncdNextHopGroups;
+    sai_next_hop_group_api_t *                                              sai_next_hop_group_api;
+    RouteBulker * route_bulker;
+    sai_object_id_t m_switchId;
 };
