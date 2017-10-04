@@ -73,9 +73,9 @@ namespace std
 
 struct NextHopGroupEntry
 {
-    sai_object_id_t         next_hop_group_id;      // next hop group id
-    std::set<sai_object_id_t>    next_hop_group_members; // next hop group member ids
-    int                     ref_count;              // reference count
+    sai_object_id_t             next_hop_group_id;      // next hop group id
+    std::set<sai_object_id_t>   next_hop_group_members; // next hop group member ids
+    int                         ref_count;              // reference count
 };
 
 /* NextHopGroupTable: next hop group IP addersses, NextHopGroupEntry */
@@ -240,7 +240,7 @@ public:
         , m_switchId(switchId)
     {
     }
-    
+
     bool hasNextHopGroup(const IpAddresses& ipAddresses) const
     {
         return m_syncdNextHopGroups.find(ipAddresses) != m_syncdNextHopGroups.end();
@@ -272,7 +272,7 @@ public:
 
         return m_syncdNextHopGroups.at(ipAddresses).ref_count == 0;
     }
-    
+
     bool addNextHopGroup(const IpAddresses& ipAddresses, const vector<sai_object_id_t>& next_hop_ids)
     {
         if (m_nextHopGroupCount >= m_maxNextHopGroupCount)
@@ -283,7 +283,7 @@ public:
         }
 
         route_bulker->flush();
-        
+
         sai_attribute_t nhg_attr;
         vector<sai_attribute_t> nhg_attrs;
 
@@ -308,10 +308,17 @@ public:
         NextHopGroupEntry next_hop_group_entry;
         next_hop_group_entry.next_hop_group_id = next_hop_group_id;
 
+        uint32_t object_count = (uint32_t)next_hop_ids.size();
+        vector<uint32_t> attr_count;
+        vector<vector<sai_attribute_t>> attrs;
+        vector<sai_object_id_t> object_id(object_count);
+        vector<sai_status_t> object_statuses(object_count);
+
+        // Create a next hop group members
         for (auto nhid: next_hop_ids)
         {
-            // Create a next hop group member
-            vector<sai_attribute_t> nhgm_attrs;
+            attrs.emplace_back();
+            auto& nhgm_attrs = attrs.back();
 
             sai_attribute_t nhgm_attr;
             nhgm_attr.id = SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_GROUP_ID;
@@ -322,11 +329,20 @@ public:
             nhgm_attr.value.oid = nhid;
             nhgm_attrs.push_back(nhgm_attr);
 
-            sai_object_id_t next_hop_group_member_id;
-            status = //redis_bulk_object_create_next_hop_group_members();
-                    sai_next_hop_group_api->
-                    create_next_hop_group_member(&next_hop_group_member_id, m_switchId, (uint32_t)nhgm_attrs.size(), nhgm_attrs.data());
+            attr_count.push_back((uint32_t)nhgm_attrs.size());
+        }
 
+        vector<sai_attribute_t const*> attrs_array;
+        for (auto const& i: attrs)
+        {
+            attrs_array.push_back(i.data());
+        }
+        status = redis_bulk_object_create_next_hop_group_members(m_switchId, object_count, attr_count.data(), attrs_array.data()
+            , SAI_BULK_OP_TYPE_INGORE_ERROR, object_id.data(), object_statuses.data());
+
+        for (uint32_t idx = 0; idx < object_count; idx++)
+        {
+            sai_object_id_t next_hop_group_member_id = object_id[idx];
             if (status != SAI_STATUS_SUCCESS)
             {
                 // TODO: do we need to clean up?
@@ -335,9 +351,10 @@ public:
                 return false;
             }
 
-            // Save the membership into next hop structure
-            next_hop_group_entry.next_hop_group_members.insert(next_hop_group_member_id);
         }
+        // Save the membership into next hop structure
+        next_hop_group_entry.next_hop_group_members.insert(object_id.begin(), object_id.end());
+
         /*
          * Initialize the next hop group structure with ref_count as 0. This
          * count will increase once the route is successfully syncd.
@@ -346,7 +363,7 @@ public:
         m_syncdNextHopGroups[ipAddresses] = next_hop_group_entry;
         return true;
     }
-    
+
     bool removeNextHopGroup(const IpAddresses& ipAddresses)
     {
         sai_status_t status;
@@ -384,7 +401,7 @@ public:
             return false;
         }
     }
-    
+
 private:
     int m_nextHopGroupCount;
     int m_maxNextHopGroupCount;
