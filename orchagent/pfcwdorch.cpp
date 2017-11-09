@@ -394,6 +394,12 @@ PfcWdSwOrch<DropHandler, ForwardHandler>::PfcWdSwOrch(
     {
         SWSS_LOG_WARN("Lua scripts for PFC watchdog were not loaded");
     }
+
+    auto consumer = new swss::NotificationConsumer(
+            PfcWdSwOrch<DropHandler, ForwardHandler>::getCountersDb().get(),
+            "PFC_WD");
+    auto wdNotification = new Notifier(consumer, this);
+    Orch::addConsumer("", wdNotification);
 }
 
 template <typename DropHandler, typename ForwardHandler>
@@ -420,11 +426,6 @@ bool PfcWdSwOrch<DropHandler, ForwardHandler>::startWdOnPort(const Port& port,
 
     registerInWdDb(port, detectionTime, restorationTime, action);
 
-    if (!m_runPfcWdSwOrchThread.load())
-    {
-        startWatchdogThread();
-    }
-
     return true;
 }
 
@@ -432,11 +433,6 @@ template <typename DropHandler, typename ForwardHandler>
 bool PfcWdSwOrch<DropHandler, ForwardHandler>::stopWdOnPort(const Port& port)
 {
     SWSS_LOG_ENTER();
-
-    if (m_runPfcWdSwOrchThread.load())
-    {
-        endWatchdogThread();
-    }
 
     unregisterFromWdDb(port);
 
@@ -507,86 +503,6 @@ void PfcWdSwOrch<DropHandler, ForwardHandler>::doTask(swss::NotificationConsumer
     {
         SWSS_LOG_ERROR("Received unknown event from plugin, %s", event.c_str());
     }
-}
-
-template <typename DropHandler, typename ForwardHandler>
-void PfcWdSwOrch<DropHandler, ForwardHandler>::pfcWatchdogThread(void)
-{
-    SWSS_LOG_ENTER();
-
-    DBConnector db(COUNTERS_DB, DBConnector::DEFAULT_UNIXSOCKET, 0);
-
-    auto consumer = new swss::NotificationConsumer(
-            PfcWdSwOrch<DropHandler, ForwardHandler>::getCountersDb().get(),
-            "PFC_WD");
-    auto wdNotification = make_shared<Notifier>(consumer, this);
-
-    swss::Select s;
-    s.addSelectable(wdNotification.get());
-
-    while(m_runPfcWdSwOrchThread)
-    {
-        unique_lock<mutex> lk(m_pfcWdMutex);
-
-        swss::Selectable *sel = NULL;
-        int fd;
-
-        int result = s.select(&sel, &fd, PFC_WD_POLL_TIMEOUT);
-
-        if (sel == wdNotification.get())
-        {
-            ((ExecutableSelectable *)sel)->execute();
-        }
-        else if (result == swss::Select::TIMEOUT)
-        {
-            // Do nothing
-        }
-        else
-        {
-            SWSS_LOG_ERROR("Received unexpected object on select");
-        }
-    }
-}
-
-template <typename DropHandler, typename ForwardHandler>
-void PfcWdSwOrch<DropHandler, ForwardHandler>::startWatchdogThread(void)
-{
-    SWSS_LOG_ENTER();
-
-    if (m_runPfcWdSwOrchThread.load())
-    {
-        return;
-    }
-
-    m_runPfcWdSwOrchThread = true;
-
-    m_pfcWatchdogThread = shared_ptr<thread>(
-            new thread(&PfcWdSwOrch::pfcWatchdogThread,
-            this));
-
-    SWSS_LOG_INFO("PFC Watchdog thread started");
-}
-
-template <typename DropHandler, typename ForwardHandler>
-void PfcWdSwOrch<DropHandler, ForwardHandler>::endWatchdogThread(void)
-{
-    SWSS_LOG_ENTER();
-
-    if (!m_runPfcWdSwOrchThread.load())
-    {
-        return;
-    }
-
-    m_runPfcWdSwOrchThread = false;
-
-    if (m_pfcWatchdogThread != nullptr)
-    {
-        SWSS_LOG_INFO("Wait for PFC Watchdog thread to end");
-
-        m_pfcWatchdogThread->join();
-    }
-
-    SWSS_LOG_INFO("PFC Watchdog thread ended");
 }
 
 // Trick to keep member functions in a separate file
