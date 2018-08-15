@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <utility>
+#include <boost/range/any_range.hpp>
 
 extern "C" {
 #include "sai.h"
@@ -60,6 +61,21 @@ typedef map<string, KeyOpFieldsValuesTuple> SyncMap;
 typedef pair<string, int> table_name_with_pri_t;
 
 class Orch;
+class Consumer;
+
+typedef boost::any_range<
+    KeyOpFieldsValuesTuple,
+    boost::forward_traversal_tag,
+    KeyOpFieldsValuesTuple&,
+    std::ptrdiff_t
+> KeyOpFieldsValuesRange;
+
+typedef boost::any_range<
+    Consumer *,
+    boost::forward_traversal_tag,
+    Consumer * const &,
+    std::ptrdiff_t
+> ConsumerRange;
 
 // Design assumption
 // 1. one Orch can have one or more Executor
@@ -130,12 +146,14 @@ public:
         return getConsumerTable()->getDbId();
     }
 
-    string dumpTuple(KeyOpFieldsValuesTuple &tuple);
-    void dumpPendingTasks(vector<string> &ts);
+    string format(const KeyOpFieldsValuesTuple &tuple) const;
+
+    KeyOpFieldsValuesRange rangeToSync();
+
+    void execute();
 
     size_t refillToSync();
     size_t refillToSync(Table* table);
-    void execute();
     void drain();
 
     /* Store the latest 'golden' status */
@@ -191,11 +209,13 @@ public:
     /* TODO: refactor recording */
     static void recordTuple(Consumer &consumer, KeyOpFieldsValuesTuple &tuple);
 
-    void dumpPendingTasks(vector<string> &ts);
+    ConsumerRange rangeConsumer();
+
 protected:
     ConsumerMap m_consumerMap;
 
     static void logfileReopen();
+    // TODO: deprecate
     string dumpTuple(Consumer &consumer, KeyOpFieldsValuesTuple &tuple);
     ref_resolve_status resolveFieldRefValue(type_map&, const string&, KeyOpFieldsValuesTuple&, sai_object_id_t&);
     bool parseIndexRange(const string &input, sai_uint32_t &range_low, sai_uint32_t &range_high);

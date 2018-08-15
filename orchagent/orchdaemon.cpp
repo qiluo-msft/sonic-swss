@@ -383,18 +383,6 @@ void OrchDaemon::warmRestoreAndSyncUp()
     WarmStart::setWarmStartState("orchagent", WarmStart::RECONCILED);
 }
 
-/*
- * Get tasks to sync for consumers of each orch being managed by this orch daemon
- */
-void OrchDaemon::getTaskToSync(vector<string> &ts)
-{
-    for (Orch *o : m_orchList)
-    {
-        o->dumpPendingTasks(ts);
-    }
-}
-
-
 /* Perform basic validation after start restore for warm start */
 bool OrchDaemon::warmRestoreValidation()
 {
@@ -402,17 +390,28 @@ bool OrchDaemon::warmRestoreValidation()
      * No pending task should exist for any of the consumer at this point.
      * All the prexisting data in appDB and configDb have been read and processed.
      */
-    vector<string> ts;
-    getTaskToSync(ts);
-    if (ts.size() != 0)
+    // TODO: Update this section accordingly once pre-warmStart consistency validation is ready.
+    bool first = true;
+    for (Orch *o : m_orchList)
     {
-        // TODO: Update this section accordingly once pre-warmStart consistency validation is ready.
-        SWSS_LOG_NOTICE("There are pending consumer tasks after restore: ");
-        for(auto &s : ts)
+        /*
+         * Get tasks to sync for consumers of each orch being managed by this orch daemon
+         */
+        for (const auto& c : o->rangeConsumer())
         {
-            SWSS_LOG_NOTICE("%s", s.c_str());
+            if (!empty(c->rangeToSync()) && first)
+            {
+                SWSS_LOG_NOTICE("There are pending consumer tasks after restore: ");
+                first = false;
+            }
+
+            for (const KeyOpFieldsValuesTuple& tuple : c->rangeToSync())
+            {
+                SWSS_LOG_NOTICE("%s", c->format(tuple).c_str());
+            }
         }
     }
+
     WarmStart::setWarmStartState("orchagent", WarmStart::RESTORED);
     return true;
 }

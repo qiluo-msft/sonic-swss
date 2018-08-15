@@ -1,6 +1,7 @@
 #include <fstream>
 #include <iostream>
 #include <sys/time.h>
+#include <boost/range/adaptors.hpp>
 #include "timestamp.h"
 #include "orch.h"
 
@@ -185,7 +186,7 @@ void Consumer::drain()
         m_orch->doTask(*this);
 }
 
-string Consumer::dumpTuple(KeyOpFieldsValuesTuple &tuple)
+string Consumer::format(const KeyOpFieldsValuesTuple &tuple) const
 {
     string s = getTableName() + getConsumerTable()->getTableNameSeparator() + kfvKey(tuple)
                + "|" + kfvOp(tuple);
@@ -197,16 +198,9 @@ string Consumer::dumpTuple(KeyOpFieldsValuesTuple &tuple)
     return s;
 }
 
-void Consumer::dumpPendingTasks(vector<string> &ts)
+KeyOpFieldsValuesRange Consumer::rangeToSync()
 {
-    for (auto &tm : m_toSync)
-    {
-        KeyOpFieldsValuesTuple& tuple = tm.second;
-
-        string s = dumpTuple(tuple);
-
-        ts.push_back(s);
-    }
+    return m_toSync | boost::adaptors::map_values;
 }
 
 size_t Orch::addExistingData(const string& tableName)
@@ -239,18 +233,11 @@ bool Orch::bake()
 {
     SWSS_LOG_ENTER();
 
-    for(auto &it : m_consumerMap)
+    for (Consumer *consumer : rangeConsumer())
     {
-        string executorName = it.first;
-        auto executor = it.second;
-        auto consumer = dynamic_cast<Consumer *>(executor.get());
-        if (consumer == NULL)
-        {
-            continue;
-        }
-
+        string name = consumer->getName();
         size_t refilled = consumer->refillToSync();
-        SWSS_LOG_NOTICE("Add warm input: %s, %zd", executorName.c_str(), refilled);
+        SWSS_LOG_NOTICE("Add warm input: %s, %zd", name.c_str(), refilled);
     }
 
     return true;
@@ -350,19 +337,36 @@ void Orch::doTask()
     }
 }
 
-void Orch::dumpPendingTasks(vector<string> &ts)
+ConsumerRange Orch::rangeConsumer()
 {
-    for(auto &it : m_consumerMap)
-    {
-        Consumer* consumer = dynamic_cast<Consumer *>(it.second.get());
-        if (consumer == NULL)
-        {
-            SWSS_LOG_DEBUG("Executor is not a Consumer");
-            continue;
-        }
+    boost::any_range<
+        std::shared_ptr<Executor>,
+        boost::forward_traversal_tag,
+        std::shared_ptr<Executor>&,
+        std::ptrdiff_t
+    > a = m_consumerMap
+        | boost::adaptors::map_values;
 
-        consumer->dumpPendingTasks(ts);
-    }
+    boost::any_range<
+        Consumer *,
+        boost::forward_traversal_tag,
+        Consumer * const &,
+        std::ptrdiff_t
+    > b = a
+        | boost::adaptors::transformed(+[](const std::shared_ptr<Executor>& executor) -> Consumer * {
+            return dynamic_cast<Consumer *>(executor.get());
+        });
+
+    boost::any_range<
+        Consumer *,
+        boost::forward_traversal_tag,
+        Consumer * const &,
+        std::ptrdiff_t
+    > c = b
+        | boost::adaptors::filtered(+[](Consumer *consumer) {
+            return consumer != NULL;
+        });
+    return c;
 }
 
 void Orch::logfileReopen()
@@ -386,7 +390,7 @@ void Orch::logfileReopen()
 
 void Orch::recordTuple(Consumer &consumer, KeyOpFieldsValuesTuple &tuple)
 {
-    string s = consumer.dumpTuple(tuple);
+    string s = consumer.format(tuple);
 
     gRecordOfs << getTimestamp() << "|" << s << endl;
 
@@ -400,7 +404,7 @@ void Orch::recordTuple(Consumer &consumer, KeyOpFieldsValuesTuple &tuple)
 
 string Orch::dumpTuple(Consumer &consumer, KeyOpFieldsValuesTuple &tuple)
 {
-    string s = consumer.dumpTuple(tuple);
+    string s = consumer.format(tuple);
     return s;
 }
 
@@ -575,4 +579,3 @@ void Orch2::doTask(Consumer &consumer)
         }
     }
 }
-
