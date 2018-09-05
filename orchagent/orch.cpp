@@ -3,6 +3,7 @@
 #include <sys/time.h>
 #include "timestamp.h"
 #include "orch.h"
+#include "notifier.h"
 
 #include "subscriberstatetable.h"
 #include "portsorch.h"
@@ -244,13 +245,33 @@ bool Orch::bake()
         string executorName = it.first;
         auto executor = it.second;
         auto consumer = dynamic_cast<Consumer *>(executor.get());
-        if (consumer == NULL)
+        if (consumer)
         {
-            continue;
+            size_t refilled = consumer->refillToSync();
+            SWSS_LOG_NOTICE("Add warm input: %s, %zd", executorName.c_str(), refilled);
         }
 
-        size_t refilled = consumer->refillToSync();
-        SWSS_LOG_NOTICE("Add warm input: %s, %zd", executorName.c_str(), refilled);
+        auto notifier = dynamic_cast<Notifier *>(executor.get());
+        if (notifier)
+        {
+            // Clear notification data. Later after syncd apply view, it will get whole flushed notifications
+            // Note: assuption each notification consumer leaving maximal _npop_ data unprocessed, such as FDB entries
+            auto nc = notifier->getNotificationConsumer();
+            size_t popped = 0;
+            const size_t npop = 100000;
+            while(nc->peek() && popped < npop)
+            {
+                std::deque<KeyOpFieldsValuesTuple> vkco;
+                nc->pops(vkco);
+                popped += vkco.size();
+            }
+
+            if (popped >= npop)
+            {
+                SWSS_LOG_ERROR("Broken assumption: too much notification %zu left in %s", popped, executorName.c_str());
+                return false;
+            }
+        }
     }
 
     return true;

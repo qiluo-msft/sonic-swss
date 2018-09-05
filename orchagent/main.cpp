@@ -167,6 +167,7 @@ int main(int argc, char **argv)
     SWSS_LOG_NOTICE("--- Starting Orchestration Agent ---");
 
     initSaiApi();
+    /* Init sairedis and notify syncd INIT_VIEW */
     initSaiRedis(record_location);
 
     sai_attribute_t attr;
